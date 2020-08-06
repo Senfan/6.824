@@ -9,7 +9,9 @@ package main
 // Please do not change this file.
 //
 
-import "../mr"
+import (
+	"../mr"
+)
 import "time"
 import "os"
 import "fmt"
@@ -25,5 +27,5 @@ func main() {
 		time.Sleep(time.Second)
 	}
 
-	time.Sleep(time.Second)
+	time.Sleep(15 * time.Second)
 }

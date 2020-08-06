@@ -8,11 +8,13 @@ package main
 // go build -buildmode=plugin crash.go
 //
 
-import "../mr"
+import (
+	"../mr"
+	"os"
+)
 import crand "crypto/rand"
 import "math/big"
 import "strings"
-import "os"
 import "sort"
 import "strconv"
 import "time"

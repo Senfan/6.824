@@ -1,3 +1,7 @@
 pkg/
 api.key
 *-handin.tar.gz
+.idea/*
+*.txt
+mr-tmp/
+.DS_Store

@@ -1,10 +1,26 @@
 package mr
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"sort"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
 
+
+// for sorting by key.
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // Map functions return a slice of KeyValue.
@@ -31,34 +47,188 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	args := DispatchTaskReq{}
+	args.PID = os.Getpid()
+	isDone := false
+	intermediateDir := "."
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	for !isDone {
+		reply := CallTask(&args)
+		if reply == nil {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		switch reply.TaskType {
+		case MAP_TASK:
+			filename := reply.FileName
+			nReduce := reply.NReduce
+			err := processMapTask(reply.TaskName, filename, reply.TaskID, nReduce, mapf, intermediateDir)
+			if err == nil {
+				completeReq := CompleteTaskReq{
+					TaskType: MAP_TASK,
+					TaskID:   reply.TaskID,
+				}
+				CompleteTaskReport(&completeReq)
+			}
+		case REDUCE_TASK:
+			reduceNO := reply.TaskID
+			err := processReduceTask(reply.TaskName, reduceNO, intermediateDir, reducef)
+			if err == nil {
+				completeReq := CompleteTaskReq{
+					TaskType: REDUCE_TASK,
+					TaskID:   reply.TaskID,
+				}
+				CompleteTaskReport(&completeReq)
+			}
+		case EXIST_TASK:
+			isDone = true
+		case WATIT_TASK:
+			time.Sleep(time.Second)
+		default:
+			println("wrong task type: ", reply.TaskType)
+		} // switch
+
+	} // for
+
+	if isDone {
+		names, err := filepath.Glob("mr-*-*-*")
+		if err == nil {
+			for _, name := range names {
+				os.Remove(name)
+			}
+		}
+
+		names, err = filepath.Glob("mr-output-*_*")
+		if err == nil {
+			for _, name := range names {
+				os.Remove(name)
+			}
+		}
+	}
 
 }
 
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
+func processMapTask(taskName string, filename string, mapNO int, nReduce int, mapf func(string, string) []KeyValue,
+	intermediateDir string) (err error) {
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	fileMap := map[string]*os.File{}
+	intermediateMap := map[int][]KeyValue{}
 
-	// fill in the argument(s).
-	args.X = 99
+	defer func() {
+		if err != nil {
+			for _, file := range fileMap {
+				os.Remove(file.Name())
+			}
+		}
+	}()
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %s, %s", filename, err)
+		return err
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	kva := mapf(filename, string(content))
+	for _, val := range kva {
+		reduceNO := ihash(val.Key) % nReduce
+		intermediateMap[reduceNO] = append(intermediateMap[reduceNO], val)
+	}
 
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
+	for reduceNO, val := range intermediateMap { // create each intermediate file
+		oname := fmt.Sprintf("%s-%d-%d", taskName, mapNO, reduceNO)
+		os.Remove(oname)
+		ofile, errI := ioutil.TempFile(intermediateDir, oname + "_")
+		if errI != nil {
+			log.Fatalf("cannot create temp file for %v", oname)
+			err = errI
+			return
+		}
+		fileMap[oname] = ofile
 
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
+		enc := json.NewEncoder(ofile)
+		for i := 0; i < len(val); i++ {
+			kv := val[i]
+			err = enc.Encode(&kv)
+			if err != nil {
+				log.Fatalf("cannot encode the file for %v", oname)
+				return
+			}
+		}
+	}
+
+	for nameKey, file := range fileMap {
+		os.Rename(file.Name(), fmt.Sprintf("%s/%s", intermediateDir, nameKey))
+		err = file.Close()
+		if err != nil {
+			log.Fatalf("cannot close the file for %v", file.Name())
+			return
+		}
+	}
+
+	return nil
+}
+
+func processReduceTask(taskName string, reduceNO int, intermediateDir string, reducef func(string, []string) string) (err error) {
+
+	// read files for reduce task reduceNO
+	pattern := fmt.Sprintf("%s/%s-*-%d", intermediateDir, taskName, reduceNO)
+	names, err := filepath.Glob(pattern)
+	if err != nil {
+		log.Fatalf("cannot match the files for %v", pattern)
+		return
+	}
+
+	intermediate := []KeyValue{}
+	for _, fileName := range names {	// read each target file for reduce task reduceNO
+		file, errI := os.Open(fileName)
+		if errI != nil {
+			log.Fatalf("cannot open the file: %v", fileName)
+			err = errI
+			return
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			intermediate = append(intermediate, kv)
+		}
+		file.Close()
+	}
+	// sort the kvs
+	sort.Sort(ByKey(intermediate))
+
+	// write to the output file
+	oname := fmt.Sprintf("mr-output-%d", reduceNO)
+	os.Remove(oname)
+	ofile, err := ioutil.TempFile(intermediateDir, oname + "_")
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+	ofile.Close()
+	os.Rename(ofile.Name(), fmt.Sprintf("%s/%s", intermediateDir, oname))
+
+	return nil
 }
 
 //
@@ -71,15 +241,17 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := masterSock()
 	c, err := rpc.DialHTTP("unix", sockname)
 	if err != nil {
+		println("dialing:", err)
 		log.Fatal("dialing:", err)
 	}
 	defer c.Close()
 
 	err = c.Call(rpcname, args, reply)
 	if err == nil {
+		rep, _ := json.Marshal(reply)
+		println("rpc reply: ", string(rep))
 		return true
 	}
-
 	fmt.Println(err)
 	return false
 }
