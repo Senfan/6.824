@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"sort"
 	"time"
 )
@@ -59,25 +58,25 @@ func Worker(mapf func(string, string) []KeyValue,
 			continue
 		}
 
-		switch reply.TaskType {
+		switch reply.Task.TaskType {
 		case MAP_TASK:
-			filename := reply.FileName
-			nReduce := reply.NReduce
-			err := processMapTask(reply.TaskName, filename, reply.TaskID, nReduce, mapf, intermediateDir)
+			filename := reply.Task.FileName
+			nReduce := reply.Task.NReduce
+			err := processMapTask(reply.Task.TaskName, filename, reply.Task.ID, nReduce, mapf, intermediateDir)
 			if err == nil {
 				completeReq := CompleteTaskReq{
 					TaskType: MAP_TASK,
-					TaskID:   reply.TaskID,
+					TaskID:   reply.Task.ID,
 				}
 				CompleteTaskReport(&completeReq)
 			}
 		case REDUCE_TASK:
-			reduceNO := reply.TaskID
-			err := processReduceTask(reply.TaskName, reduceNO, intermediateDir, reducef)
+			reduceNO := reply.Task.ID
+			err := processReduceTask(reply.Task.TaskName, reduceNO, reply.Task.ReduceTaskFiles, intermediateDir, reducef)
 			if err == nil {
 				completeReq := CompleteTaskReq{
 					TaskType: REDUCE_TASK,
-					TaskID:   reply.TaskID,
+					TaskID:   reply.Task.ID,
 				}
 				CompleteTaskReport(&completeReq)
 			}
@@ -86,26 +85,26 @@ func Worker(mapf func(string, string) []KeyValue,
 		case WATIT_TASK:
 			time.Sleep(time.Second)
 		default:
-			println("wrong task type: ", reply.TaskType)
+			println("wrong task type: ", reply.Task.TaskType)
 		} // switch
 
 	} // for
 
-	if isDone {
-		names, err := filepath.Glob("mr-*-*-*")
-		if err == nil {
-			for _, name := range names {
-				os.Remove(name)
-			}
-		}
-
-		names, err = filepath.Glob("mr-output-*_*")
-		if err == nil {
-			for _, name := range names {
-				os.Remove(name)
-			}
-		}
-	}
+	//if isDone {
+	//	names, err := filepath.Glob("mr-*-*-*")
+	//	if err == nil {
+	//		for _, name := range names {
+	//			os.Remove(name)
+	//		}
+	//	}
+	//
+	//	names, err = filepath.Glob("mr-output-*_*")
+	//	if err == nil {
+	//		for _, name := range names {
+	//			os.Remove(name)
+	//		}
+	//	}
+	//}
 
 }
 
@@ -114,6 +113,7 @@ func processMapTask(taskName string, filename string, mapNO int, nReduce int, ma
 
 	fileMap := map[string]*os.File{}
 	intermediateMap := map[int][]KeyValue{}
+	reduceTaskFilesMap := map[int][]string{}
 
 	defer func() {
 		if err != nil {
@@ -159,6 +159,7 @@ func processMapTask(taskName string, filename string, mapNO int, nReduce int, ma
 				return
 			}
 		}
+		reduceTaskFilesMap[reduceNO] = append(reduceTaskFilesMap[reduceNO], oname)
 	}
 
 	for nameKey, file := range fileMap {
@@ -169,19 +170,16 @@ func processMapTask(taskName string, filename string, mapNO int, nReduce int, ma
 			return
 		}
 	}
+	args := CollectInterFilesReq{SubMapReduceTaskMap: reduceTaskFilesMap}
+	SendInterFiles(&args)
 
 	return nil
 }
 
-func processReduceTask(taskName string, reduceNO int, intermediateDir string, reducef func(string, []string) string) (err error) {
+func processReduceTask(taskName string, reduceNO int, files []string, intermediateDir string, reducef func(string, []string) string) (err error) {
 
 	// read files for reduce task reduceNO
-	pattern := fmt.Sprintf("%s/%s-*-%d", intermediateDir, taskName, reduceNO)
-	names, err := filepath.Glob(pattern)
-	if err != nil {
-		log.Fatalf("cannot match the files for %v", pattern)
-		return
-	}
+	names := files
 
 	intermediate := []KeyValue{}
 	for _, fileName := range names {	// read each target file for reduce task reduceNO
@@ -227,6 +225,9 @@ func processReduceTask(taskName string, reduceNO int, intermediateDir string, re
 	}
 	ofile.Close()
 	os.Rename(ofile.Name(), fmt.Sprintf("%s/%s", intermediateDir, oname))
+	for _, fileName := range files {
+		os.Remove(fileName)
+	}
 
 	return nil
 }

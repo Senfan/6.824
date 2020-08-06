@@ -58,28 +58,31 @@ type DispatchTaskReq struct {
 
 // correspond reply
 type DispatchTaskResp struct {
-	TaskType TaskType
-	TaskID   int
-	FileName string
-	NReduce  int
-	TaskName string
+	Task TaskNode
 }
 
 type CompleteTaskReq struct {
 	TaskType TaskType
-	TaskID 	 int
+	TaskID   int
 }
-
 type CompleteTaskResp struct {
 }
 
+type CollectInterFilesReq struct {
+	SubMapReduceTaskMap map[int][]string
+}
+type CollectInterFilesResp struct {
+}
+
 type TaskNode struct {
-	ID       int
-	BeginAT  time.Time
-	WorkerID string
-	TaskType TaskType
-	FileName string
-	TaskName string
+	ID              int
+	BeginAT         time.Time
+	WorkerID        string
+	TaskType        TaskType
+	FileName        string
+	TaskName        string
+	ReduceTaskFiles []string
+	NReduce         int
 }
 
 // Add your RPC definitions here.
@@ -106,6 +109,20 @@ func CompleteTaskReport(args *CompleteTaskReq) *CompleteTaskResp {
 
 	return &reply
 }
+
+func SendInterFiles(args *CollectInterFilesReq) *CollectInterFilesResp {
+	reply := CollectInterFilesResp{}
+
+	isSuc := call("Master.CollectSubMapReduceTask", &args, &reply)
+
+	if !isSuc {
+		log.Fatal("can not get the task from master")
+		return nil
+	}
+
+	return &reply
+}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the master.
 // Can't use the current directory since

@@ -14,7 +14,7 @@ import "net/http"
 
 type Master struct {
 	// Your definitions here.
-	taskName 	   string
+	taskName       string
 	nMap           int // number of map tasks to process
 	nReduce        int // number of reduce tasks to process
 	doneMapTask    map[int]bool
@@ -27,6 +27,8 @@ type Master struct {
 	doneMapTaskLock     sync.RWMutex
 	doneReduceTaskLock  sync.RWMutex
 	done                chan interface{}
+
+	reduceTaskFilesMap map[int][]string
 }
 
 func (m *Master) readDoneMapTask(taskID int) bool {
@@ -75,12 +77,12 @@ func (m *Master) lenDoneReduceTask() int {
 	return len(m.doneReduceTask)
 }
 
-func (m *Master)taskTick(done <-chan interface{}) {	// 处理执行中的任务
+func (m *Master) taskTick(done <-chan interface{}) { // 处理执行中的任务
 	for {
 		select {
 		case <-done:
 			return
-		case ingTask := <- m.inProcessTaskStream:
+		case ingTask := <-m.inProcessTaskStream:
 			if ingTask.TaskType == MAP_TASK || ingTask.TaskType == REDUCE_TASK {
 				if ingTask.TaskType == MAP_TASK && m.readDoneMapTask(ingTask.ID) {
 					continue
@@ -111,55 +113,40 @@ func (m *Master)taskTick(done <-chan interface{}) {	// 处理执行中的任务
 func (m *Master) DispatchTask(args *DispatchTaskReq, reply *DispatchTaskResp) error {
 
 	defer func() {
-		reply.TaskName = m.taskName
+		reply.Task.TaskName = m.taskName
 	}()
 	println(args.PID)
 	// 分发map任务
-	if m.nMap > m.lenDoneMapTask() { // Map
-		for  {
-			select {
-			case <-m.done:
-				reply.TaskType = EXIST_TASK
-				return nil
-			case task := <-m.mapTaskStream:
-				reply.TaskType = MAP_TASK
-				reply.TaskID = task.ID
-				reply.FileName = task.FileName
-				reply.NReduce = m.nReduce
-				println("get task from stream: ", task.ID, " ", task.FileName)
-				task.BeginAT = time.Now()
-				task.WorkerID = args.IP + "-" + string(args.PID)
-				m.inProcessTaskStream <- task
-				return nil
-			case <-time.After(time.Second * 1):	//
-				reply.TaskType = WATIT_TASK
-				return nil
-			}
+	for {
+		if m.nReduce == m.lenDoneReduceTask() {
+			reply.Task.TaskType = EXIST_TASK
+			return nil
+		}
+		select {
+		case task := <-m.mapTaskStream:
+			reply.Task.TaskType = MAP_TASK
+			reply.Task.ID = task.ID
+			reply.Task.FileName = task.FileName
+			reply.Task.NReduce = m.nReduce
+			println("get task from stream: ", task.ID, " ", task.FileName)
+			task.BeginAT = time.Now()
+			task.WorkerID = args.IP + "-" + string(args.PID)
+			m.inProcessTaskStream <- task
+			return nil
+		case task := <-m.reduceTaskStream:
+			reply.Task.TaskType = REDUCE_TASK
+			reply.Task.ID = task.ID
+			reply.Task.NReduce = m.nReduce
+			reply.Task.ReduceTaskFiles = m.reduceTaskFilesMap[task.ID]
+			task.BeginAT = time.Now()
+			task.WorkerID = args.IP + "-" + string(args.PID)
+			m.inProcessTaskStream <- task
+			return nil
+		case <-time.After(time.Second * 1): //
+			reply.Task.TaskType = WATIT_TASK
+			return nil
 		}
 	}
-
-	// 分发reduce任务
-	if m.nReduce > m.lenDoneReduceTask() {
-		for  {
-			select {
-			case task := <-m.reduceTaskStream:
-				reply.TaskType = REDUCE_TASK
-				reply.TaskID = task.ID
-				reply.NReduce = m.nReduce
-				task.BeginAT = time.Now()
-				task.WorkerID = args.IP + "-" + string(args.PID)
-				m.inProcessTaskStream <- task
-				return nil
-			case <-time.After(time.Second * 1):	//
-				reply.TaskType = WATIT_TASK
-				return nil
-			}
-		}
-	} else {
-		reply.TaskType = EXIST_TASK
-		return nil
-	}
-	reply.TaskType = WATIT_TASK
 
 	return nil
 }
@@ -173,6 +160,15 @@ func (m *Master) CompleteTask(args *CompleteTaskReq, reply *CompleteTaskResp) er
 		m.setDoneReduceTask(args.TaskID)
 	}
 
+	return nil
+}
+
+func (m *Master) CollectSubMapReduceTask(args *CollectInterFilesReq, reply *CollectInterFilesResp) error {
+	if args != nil {
+		for reduceTaskNO, files := range args.SubMapReduceTaskMap {
+			m.reduceTaskFilesMap[reduceTaskNO] = append(m.reduceTaskFilesMap[reduceTaskNO], files...)
+		}
+	}
 	return nil
 }
 
@@ -191,7 +187,7 @@ func (m *Master) server() {
 	}
 	go http.Serve(l, nil)
 
-	go func() {	// 初始化顺序队列
+	go func() { // 初始化顺序队列
 		for mapID, fileName := range m.mapFiles {
 			if fileName != "" {
 				m.mapTaskStream <- TaskNode{
@@ -256,6 +252,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.reduceTaskStream = make(chan TaskNode, 10)
 	m.doneMapTask = map[int]bool{}
 	m.doneReduceTask = map[int]bool{}
+	m.reduceTaskFilesMap = map[int][]string{}
 
 	done := make(chan interface{})
 	m.done = done
@@ -263,7 +260,7 @@ func MakeMaster(files []string, nReduce int) *Master {
 	rand.Seed(time.Now().UnixNano())
 	taskName := fmt.Sprintf("mr-%d", rand.Int())
 	m.taskName = taskName
-	go func() {	// 初始化map任务
+	go func() { // 初始化map任务
 		for ind, fileName := range files {
 			taskNode := TaskNode{
 				ID:       ind,
