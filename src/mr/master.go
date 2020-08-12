@@ -23,7 +23,7 @@ type Master struct {
 
 	mapTaskStream       chan TaskNode
 	reduceTaskStream    chan TaskNode
-	inProcessTaskStream chan TaskNode
+	inProcessTaskStream chan TaskNode	// todo: 更直接的方式是为每一个分配的task启动一个计时goroutine
 	doneMapTaskLock     sync.RWMutex
 	doneReduceTaskLock  sync.RWMutex
 	done                chan interface{}
@@ -142,7 +142,7 @@ func (m *Master) DispatchTask(args *DispatchTaskReq, reply *DispatchTaskResp) er
 			task.WorkerID = args.IP + "-" + string(args.PID)
 			m.inProcessTaskStream <- task
 			return nil
-		case <-time.After(time.Second * 1): //
+		default:
 			reply.Task.TaskType = WATIT_TASK
 			return nil
 		}
