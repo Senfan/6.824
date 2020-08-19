@@ -366,11 +366,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 func (rf *Raft) Run() {
 	for {
-		rf.mu.Lock()
-		if rf.dead == 1 {
-			break
-		}
-		rf.mu.Unlock()
 		switch rf.state { // 分状态指定需要处理的事情
 		case FOLLOWER:
 			select {
