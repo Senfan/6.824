@@ -587,7 +587,7 @@ func (rf *Raft) applyLog(src int) {
 		msg.CommandValid = true
 		msg.Command = rf.log[i-baseIndex].Command
 		msg.CommandTerm = rf.log[i-baseIndex].Term
-		println(fmt.Sprintf("src: %d, server %d, curTerm %d, msgterm %d, state %d, commitIndex %d, value %v", src, rf.me, rf.currentTerm, msg.CommandTerm, rf.state, i, msg.Command))
+		//println(fmt.Sprintf("src: %d, server %d, curTerm %d, msgterm %d, state %d, commitIndex %d, value %v", src, rf.me, rf.currentTerm, msg.CommandTerm, rf.state, i, msg.Command))
 		rf.applyCh <- msg
 	}
 	rf.lastApplied = rf.commitIndex
